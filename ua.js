@@ -1,73 +1,78 @@
 (function () {
     'use strict';
 
-    function UAFixBalancer() {
-        let network = new Lampa.Reguest();
-        let cors_proxy = "https://api.allorigins.win/raw?url=";
-        let uafix_base = "https://uafix.net";
+    // Використовуємо перевірений CORS-проксі
+    let cors_proxy = "https://api.allorigins.win/raw?url=";
+    let uafix_base = "https://uafix.net";
 
-        this.search = function (match, card) {
-            let title = card.title || card.name;
+    function UAFixComponent(object) {
+        let network = new Lampa.Reguest();
+        let scroll = Lampa.Template.get('scroll');
+        let items = [];
+
+        this.create = function () {
+            this.activity.loader(true);
+            
+            let title = object.card.title || object.card.name;
             let search_url = cors_proxy + encodeURIComponent(uafix_base + '/index.php?do=search&subaction=search&story=' + encodeURIComponent(title));
 
+            // Точно такий же запит, як у робочому плагіні
             network.silent(search_url, (html) => {
-                this.parseSearch(html, match, card);
+                let dom = $(html);
+                let found = [];
+
+                dom.find('a[href*="/video/"], a[href*="/films/"], .shortstory a, .movie-item a').each(function () {
+                    let link = $(this).attr('href');
+                    let name = $(this).text() || $(this).attr('title') || $(this).find('img').attr('alt');
+                    
+                    if (link && name && name.trim().length > 2) {
+                        if (link.indexOf('http') === -1) link = uafix_base + link;
+                        if (!found.some(item => item.url === link)) {
+                            found.push({ title: name.trim(), url: link });
+                        }
+                    }
+                });
+
+                this.activity.loader(false);
+
+                if (found.length === 0) {
+                    this.empty();
+                } else {
+                    this.buildMenu(found);
+                }
             }, () => {
-                match.clear();
+                this.activity.loader(false);
+                this.empty('Помилка мережі UAFix');
             }, false, {dataType: 'text'});
+
+            return scroll.render();
         };
 
-        this.parseSearch = function (html, match, card) {
-            let dom = $(html);
-            let found_items = [];
-
-            dom.find('a[href*="/video/"], a[href*="/films/"], .shortstory a, .movie-item a').each(function () {
-                let link = $(this).attr('href');
-                let title = $(this).text() || $(this).attr('title') || $(this).find('img').attr('alt');
-                
-                if (link && title && title.trim().length > 2) {
-                    if (link.indexOf('http') === -1) link = uafix_base + link;
-                    
-                    if (!found_items.some(item => item.url === link)) {
-                        found_items.push({
-                            title: title.trim(),
-                            url: link
-                        });
-                    }
-                }
-            });
-
-            if (found_items.length === 0) {
-                match.clear();
-                return;
-            }
-
-            let results = found_items.map(item => {
-                return {
+        this.buildMenu = function (found) {
+            found.forEach(item => {
+                let card = Lampa.Template.get('button', {
                     title: item.title,
-                    quality: 'HD',
-                    translation: 'Українська (UAFix)',
-                    url: item.url,
-                    template: 'video',
-                    callback: () => {
-                        this.extractStream(item.url, card.title || card.name);
-                    }
-                };
+                    description: 'Українська якість (UAFix)'
+                });
+
+                card.on('hover:enter', () => {
+                    this.extractStream(item.url, item.title);
+                });
+
+                scroll.append(card);
             });
 
-            match.success(results);
+            Lampa.Controller.enable('content');
         };
 
         this.extractStream = function (pageUrl, videoTitle) {
             Lampa.Loading.show();
-            let target_url = cors_proxy + encodeURIComponent(pageUrl);
-
-            network.silent(target_url, (html) => {
+            network.silent(cors_proxy + encodeURIComponent(pageUrl), (html) => {
                 Lampa.Loading.hide();
-                let player_match = html.match(/iframe.*?src="(.*?)"/) || html.match(/file\s*:\s*"(.*?)"/);
+                let match = html.match(/iframe.*?src="(.*?)"/) || html.match(/file\s*:\s*"(.*?)"/);
                 
-                if (player_match && player_match[1]) {
-                    let streamUrl = player_match[1];
+                if (match && match[1]) {
+                    let streamUrl = match[1];
                     if (streamUrl.indexOf('//') === 0) streamUrl = 'https:' + streamUrl;
 
                     if (streamUrl.indexOf('.m3u8') !== -1) {
@@ -86,21 +91,19 @@
 
         this.extractFromIframe = function (iframeUrl, videoTitle) {
             Lampa.Loading.show();
-            let target_url = cors_proxy + encodeURIComponent(iframeUrl);
-
-            network.silent(target_url, (html) => {
+            network.silent(cors_proxy + encodeURIComponent(iframeUrl), (html) => {
                 Lampa.Loading.hide();
-                let file_match = html.match(/file\s*:\s*"(.*?)"/) || html.match(/"file"\s*:\s*"(.*?)"/) || html.match(/src\s*:\s*"(.*?\.m3u8.*?)"/);
+                let file = html.match(/file\s*:\s*"(.*?)"/) || html.match(/"file"\s*:\s*"(.*?)"/) || html.match(/src\s*:\s*"(.*?\.m3u8.*?)"/);
                 
-                if (file_match && file_match[1]) {
-                    this.play(file_match[1], videoTitle);
+                if (file && file[1]) {
+                    this.play(file[1], videoTitle);
                 } else {
                     Lampa.Noty.show('Відеопотік не знайдено');
                 }
             }, () => {
                 Lampa.Loading.hide();
                 Lampa.Noty.show('Помилка плеєра');
-            });
+            }, false, {dataType: 'text'});
         };
 
         this.play = function (url, title) {
@@ -110,24 +113,36 @@
                 Lampa.Controller.toggle('full');
             });
         };
+
+        this.empty = function (msg) {
+            let empty = Lampa.Template.get('empty', {title: 'Нічого не знайдено', desc: msg || 'На UAFix немає цього контенту'});
+            scroll.append(empty);
+        };
     }
 
-    // Головна зміна: додаємо плагін безпосередньо у внутрішній масив подій Lampa
+    // Рідна інтеграція у вікно балансерів Lampa (копіюємо поведінку Rezka Component)
     if (window.appready) {
-        // Реєструємо компонент
-        Lampa.Component.add('uafix_mod', UAFixBalancer);
+        Lampa.Component.add('uafix_mod', UAFixComponent);
 
-        // Створюємо слухач, який малюватиметься у вікні балансерів
         Lampa.Listener.follow('extension', function (e) {
-            if (e.name == 'search' && (e.plugin == 'uafix_mod' || !e.plugin)) {
-                let balancer = new UAFixBalancer();
-                balancer.search(e.match, e.card);
+            if (e.name == 'search' && (!e.plugin || e.plugin == 'uafix_mod')) {
+                // Додаємо наш UAFix в офіційний список джерел під головну кнопку "Дивитись"
+                e.match.success([{
+                    title: 'UAFix (Безкоштовно)',
+                    quality: 'HD',
+                    translation: 'Українська',
+                    template: 'video',
+                    callback: function () {
+                        Lampa.Activity.push({
+                            url: '',
+                            title: 'UAFix',
+                            component: 'uafix_mod',
+                            card: e.card,
+                            page: 1
+                        });
+                    }
+                }]);
             }
         });
-
-        // Додаємо плагін у список активних парсерів відео контенту
-        if (window.plugins && !window.plugins.uafix_mod) {
-            window.plugins.uafix_mod = true;
-        }
     }
 })();
